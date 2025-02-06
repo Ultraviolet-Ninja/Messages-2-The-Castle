@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<configuration>
+    <logger name="org.apache.fontbox.tff" level="OFF" />
+    <logger name="org.apache.fontbox.ttf.gsub" level="OFF" />
+    <logger name="org.apache.pdfbox.pdmodel.font" level="OFF" />
+    <logger name="org.apache.fontbox.util.autodetect" level="OFF" />
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd | HH:mm:ss} [%thread] %p | %logger{25}%n\t%m%n</pattern>
+            <charset>utf8</charset>
+        </encoder>
+    </appender>
+
+    <appender name="INFO_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/messages-to-the-castle.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/messages-to-the-castle-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>10</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd | HH:mm:ss} %p [%t] %c{2} - %m%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="debug">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="INFO_FILE" />
+    </root>
+</configuration>
