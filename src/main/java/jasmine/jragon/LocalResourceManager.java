@@ -6,16 +6,16 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 
-public final class LocalFileManager {
-    private static final Logger LOG = LoggerFactory.getLogger(LocalFileManager.class);
+public final class LocalResourceManager {
+    private static final Logger LOG = LoggerFactory.getLogger(LocalResourceManager.class);
 
-    public static boolean attemptFileDeletion(@NonNull File file) {
-        String name = file.getName();
-        if (file.delete()) {
-            LOG.debug("Deleted file {}", name);
+    public static boolean attemptFileDeletion(@NonNull File resource) {
+        var name = resource.getName();
+        if (resource.delete()) {
+            LOG.debug("Deleted {}", name);
             return true;
         } else {
-            LOG.warn("Deleted attempted on file {}, but failed", name);
+            LOG.warn("Deleted attempted on {}, but failed", name);
             return false;
         }
     }
@@ -26,11 +26,15 @@ public final class LocalFileManager {
 
     public static boolean attemptFileRename(File current, File desired) {
         if (current.renameTo(desired)) {
-            LOG.info("Rename Success: {} -> {}", current, desired);
+            LOG.debug("Rename Success: {} -> {}", current, desired);
             return true;
         } else {
             LOG.warn("Rename Failed: {} X {}", current, desired);
             return false;
         }
+    }
+
+    public static String getThreadName() {
+        return Thread.currentThread().getName();
     }
 }

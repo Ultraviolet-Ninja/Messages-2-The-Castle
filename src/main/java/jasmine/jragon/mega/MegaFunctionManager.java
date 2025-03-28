@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
-import static jasmine.jragon.LocalFileManager.attemptFileDeletion;
+import static jasmine.jragon.LocalResourceManager.attemptFileDeletion;
 import static jasmine.jragon.dropbox.model.v2.IntermediateFile.MEGA_CLOUD_NOTE_BASE_PATH;
 
 public final class MegaFunctionManager {

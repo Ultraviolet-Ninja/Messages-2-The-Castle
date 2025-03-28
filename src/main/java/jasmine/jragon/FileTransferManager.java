@@ -25,7 +25,7 @@ import java.util.concurrent.RecursiveAction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-import static jasmine.jragon.LocalFileManager.attemptFileDeletion;
+import static jasmine.jragon.LocalResourceManager.attemptFileDeletion;
 import static jasmine.jragon.dropbox.DropboxFunctionManager.downloadFile;
 import static jasmine.jragon.mega.MegaFunctionManager.sendFileToMega;
 

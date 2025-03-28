@@ -4,7 +4,7 @@ import jasmine.jragon.dropbox.cli.command.DropboxSession;
 import jasmine.jragon.dropbox.cli.command.GetCommand;
 import jasmine.jragon.dropbox.cli.model.DropboxProcessResponse;
 import jasmine.jragon.dropbox.model.v2.DbxLongListFileInfo;
-import jasmine.jragon.dropbox.model.v2.movement.FileMove;
+import jasmine.jragon.dropbox.model.v2.movement.simple.FileMove;
 import jasmine.jragon.stream.collector.restream.grouping.KeylessGroup;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;

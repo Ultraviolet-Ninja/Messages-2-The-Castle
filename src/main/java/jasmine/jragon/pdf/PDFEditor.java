@@ -1,6 +1,6 @@
 package jasmine.jragon.pdf;
 
-import jasmine.jragon.LocalFileManager;
+import jasmine.jragon.LocalResourceManager;
 import jasmine.jragon.dropbox.model.v2.IntermediateFile;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
@@ -72,42 +72,50 @@ public final class PDFEditor {
     public static void customizeDocFile(IntermediateFile intermediateFile) {
         int pageCount = 1;
         boolean wasSuccessfulOperation;
-        int threadId = generateThreadId();
-        var tempFileName = createTempFileName(threadId);
-        var root = new PDDocumentOutline();
-
+        var tempFileName = createTempFileName();
+        var docOutline = new PDDocumentOutline();
+        boolean watermarkAdded = false;
         try (var document = intermediateFile.createPDF()) {
-            document.getDocumentCatalog().setDocumentOutline(root);
+            document.getDocumentCatalog().setDocumentOutline(docOutline);
+            var dbxPath = intermediateFile.getDropboxFilePath();
 
             for (var page : document.getPages()) {
-                addTextToPage(document, page);
-                addOutlineToPage(page, pageCount++, root);
+                addTextToPage(document, page, pageCount, dbxPath);
+                addOutlineToPage(page, pageCount++, docOutline);
             }
 
             addMetaData(document);
             addPermissions(document, String.valueOf(intermediateFile.createLocalFileObject()));
-            addWatermark(document, tempFileName);
-            wasSuccessfulOperation = true;
+            watermarkAdded = addWatermark(document, tempFileName);
+            wasSuccessfulOperation = watermarkAdded;
         } catch (IOException | RuntimeException e) {
-            LOG.error(e.getMessage(), e);
+            LOG.error("Transaction Error Occurred on {}: ", intermediateFile.getDropboxFilePath(), e);
             wasSuccessfulOperation = false;
         }
 
         wasSuccessfulOperation = wasSuccessfulOperation &&
-                LocalFileManager.attemptFileDeletion(intermediateFile.getLocalFile());
+                LocalResourceManager.attemptFileDeletion(intermediateFile.getLocalFile()) &&
+                LocalResourceManager.attemptFileRename(new File(tempFileName), intermediateFile.createLocalFileObject());;
 
-        if (wasSuccessfulOperation) {
-            LocalFileManager.attemptFileRename(new File(tempFileName), intermediateFile.createLocalFileObject());
-        } else {
+        if (!wasSuccessfulOperation && watermarkAdded) {
             //Could delete the edited file and proceed with the original version
-            LocalFileManager.attemptFileDeletion(tempFileName);
+            LocalResourceManager.attemptFileDeletion(tempFileName);
         }
-
-        THREAD_IDS.remove(threadId);
     }
 
-    private static String createTempFileName(int threadId) {
-        return TEMPORARY_FILE_NAME + threadId + ".pdf";
+    private static String createTempFileName() {
+        var threadName = LocalResourceManager.getThreadName();
+
+        if (threadName.startsWith("Fork")) {
+            var forkJoinThreadId = threadName.substring(threadName.lastIndexOf('-') + 1);
+
+            return THREAD_FILENAME_CACHE.computeIfAbsent(
+                    forkJoinThreadId,
+                    fjThread -> TEMPORARY_FILE_NAME + fjThread + ".pdf"
+            );
+        }
+
+        return TEMPORARY_FILE_NAME + "0.pdf";
     }
     
     private static int generateThreadId() {
@@ -156,11 +164,12 @@ public final class PDFEditor {
         documentInfo.setModificationDate(currentCalendarDate);
     }
 
-    private static void addWatermark(PDDocument document, String tempFileName) throws RuntimeException {
+    private static boolean addWatermark(PDDocument document, String tempFileName) throws IOException {
         var watermarkStreamOptional = Optional.ofNullable(PDFEditor.class.getResourceAsStream(WATERMARK_PDF));
 
         if (watermarkStreamOptional.isEmpty()) {
-            throw new RuntimeException("No watermark document");
+            LOG.warn("Watermark file not found. Aborting.");
+            return false;
         }
 
         try (var watermarkDocument = Loader.loadPDF(new RandomAccessReadBuffer(watermarkStreamOptional.get()));
@@ -172,9 +181,8 @@ public final class PDFEditor {
 
             try (var outputDocument = overlay.overlayDocuments(new HashMap<>())) {
                 outputDocument.save(tempFileName);
+                return true;
             }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
         }
     }
 
