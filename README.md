@@ -156,7 +156,8 @@ Design a Java wrapper around the CLI similar to [Eliux MEGA cmd4J library](https
 
 
 ### Future Operations
-- [ ] Creating a file that extracts all the important info from the notes so that we can plug them into the HNI
+- [ ] Make a simulation mode for other people to run
+- [ ] Creating a file that extracts all the important info from the notes so that we can plug them into the Handwriting Note Indexer Project
 - [x] Making the highlightable lines more accommodating to notes with differing line counts
 - [x] Add a progress bar for the CLI when running this program manually
     - [x] Let's make it more exciting with sub-progress bars for the sequential and parallel manual runs
