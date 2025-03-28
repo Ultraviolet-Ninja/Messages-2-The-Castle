@@ -23,6 +23,8 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static jasmine.jragon.LocalResourceManager.isRunningOnMac;
+
 public final class DropboxFunctionManager {
     private static final double DROP_OFF_RATE = 0.5;
     private static final Logger LOG = LoggerFactory.getLogger(DropboxFunctionManager.class);
@@ -95,12 +97,6 @@ public final class DropboxFunctionManager {
                 .map(DbxLongListFileInfo::new)
                 .collect(Collectors.partitioningBy(DbxLongListFileInfo::isFile));
         return Optional.of(fileFolderSplit);
-    }
-
-    public static boolean isRunningOnMac() {
-        return System.getProperty("os.name")
-                .toLowerCase()
-                .contains("mac");
     }
 
     public static void reduceRetrievalList(@NotNull List<DbxLongListFileInfo> dropboxFilePaths,

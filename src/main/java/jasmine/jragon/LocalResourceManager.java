@@ -37,4 +37,10 @@ public final class LocalResourceManager {
     public static String getThreadName() {
         return Thread.currentThread().getName();
     }
+
+    public static boolean isRunningOnMac() {
+        return System.getProperty("os.name")
+                .toLowerCase()
+                .contains("mac");
+    }
 }
