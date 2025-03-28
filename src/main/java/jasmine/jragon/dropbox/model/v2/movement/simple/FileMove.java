@@ -1,8 +1,9 @@
-package jasmine.jragon.dropbox.model.v2.movement;
+package jasmine.jragon.dropbox.model.v2.movement.simple;
 
 import jasmine.jragon.dropbox.model.v2.DbxLongListFileInfo;
 import jasmine.jragon.dropbox.model.v2.IntermediateFile;
 import lombok.RequiredArgsConstructor;
+import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -71,6 +72,21 @@ public final class FileMove {
         if ((firstDirectorClone.size() == 1 && secondDirectoryClone.isEmpty()) ||
                 (firstDirectorClone.isEmpty() && secondDirectoryClone.size() == 1)) {
             return true;
+        } else if (firstDirectorClone.size() == 1 && secondDirectoryClone.size() == 1) {
+            //This signifies a 'move' where a directory was renamed somewhere along the absolute path 'chain'
+            var firstDiff = firstDirectorClone.get(0);
+            var secondDiff = secondDirectoryClone.get(0);
+
+            //One diff MUST contain the other diff as a substring of the new directory
+            //This is enforced as to not confuse
+            if (!firstDiff.toLowerCase().contains(secondDiff.toLowerCase()) &&
+                    !secondDiff.toLowerCase().contains(firstDiff.toLowerCase())) {
+                return false;
+            }
+
+            //This shows that the different directories are at the same level
+            return firstDirectoryList.size() == secondDirectoryList.size() &&
+                    firstDirectoryList.indexOf(firstDiff) == secondDirectoryList.indexOf(secondDiff);
         }
 
         return firstFile.haveSameSubdirectory(secondFile);
@@ -99,7 +115,7 @@ public final class FileMove {
     }
 
     @Override
-    public String toString() {
+    public @NotNull String toString() {
         if (!isValidMove()) {
             return "Invalid file move";
         }

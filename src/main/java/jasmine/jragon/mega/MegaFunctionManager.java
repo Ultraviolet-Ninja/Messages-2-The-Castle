@@ -1,7 +1,7 @@
 package jasmine.jragon.mega;
 
 import jasmine.jragon.dropbox.model.v2.DbxLongListFileInfo;
-import jasmine.jragon.dropbox.model.v2.movement.FileMove;
+import jasmine.jragon.dropbox.model.v2.movement.simple.FileMove;
 import jasmine.jragon.dropbox.model.v2.IntermediateFile;
 import jasmine.jragon.mega.eliux.v2.MegaSession;
 import jasmine.jragon.mega.eliux.v2.cmd.MegaCmdPutSingle;

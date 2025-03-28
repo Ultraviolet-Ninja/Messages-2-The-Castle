@@ -3,7 +3,8 @@ package jasmine.jragon;
 import jasmine.jragon.dropbox.cli.command.DropboxSession;
 import jasmine.jragon.dropbox.cli.command.RemoveCommand;
 import jasmine.jragon.dropbox.model.v2.DbxLongListFileInfo;
-import jasmine.jragon.dropbox.model.v2.movement.FileMove;
+import jasmine.jragon.dropbox.model.v2.IntermediateFile;
+import jasmine.jragon.dropbox.model.v2.movement.simple.FileMove;
 import jasmine.jragon.dropbox.model.v2.movement.advanced.PageContentIndex;
 import jasmine.jragon.mega.eliux.v2.Mega;
 import jasmine.jragon.mega.eliux.v2.MegaSession;
@@ -100,7 +101,7 @@ public final class MegaUpload {
         var dropboxFilePaths = filesAndFolders.get(DBX_FILES);
         dropboxFilePaths.sort(DbxLongListFileInfo::compareByFilename);
 
-        conductFileMovements(dropboxFilePaths);
+        conductSimpleFileMovements(dropboxFilePaths, dropboxSession);
 
         var filePathsClone = new ArrayList<>(dropboxFilePaths);
 
@@ -150,25 +151,13 @@ public final class MegaUpload {
         return isFound;
     }
 
-    private static void conductFileMovements(List<DbxLongListFileInfo> dropboxFilePaths) {
+    private static void conductSimpleFileMovements(List<DbxLongListFileInfo> dropboxFilePaths,
+                                                   DropboxSession dropboxSession) {
         var fileMovements = retrieveSimpleFileMovements(dropboxFilePaths);
         if (fileMovements.isEmpty()) {
+            LOG.debug("No simple movements conducted");
             return;
         }
-
-        var dropboxSession = new DropboxSession(false);
-        Consumer<RemoveCommand> removeOldFile = removeCommand -> {
-            try {
-                var output = removeCommand.execute();
-                if (output.isError()) {
-                    LOG.warn(output.errorMessage());
-                }
-            } catch (InterruptedException e) {
-                LOG.error("Timeout: ", e);
-            } catch (IllegalStateException e) {
-                LOG.error("Operation took too long: ", e);
-            }
-        };
 
         fileMovements.stream()
                 .peek(fileMove -> LOG.info(String.valueOf(fileMove)))
@@ -177,7 +166,7 @@ public final class MegaUpload {
                 .peek(dropboxFilePaths::remove)
                 .map(DbxLongListFileInfo::toString)
                 .map(dropboxSession::remove)
-                .forEach(removeOldFile);
+                .forEach(DropboxFunctionManager::removeDropboxResource);
     }
 
     private static void conductAdvancedFileMoves(PageContentIndex contentIndex) {
