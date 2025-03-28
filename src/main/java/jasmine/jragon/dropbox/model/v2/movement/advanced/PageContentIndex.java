@@ -3,6 +3,8 @@ package jasmine.jragon.dropbox.model.v2.movement.advanced;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.pdmodel.PDPageTree;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import speiger.src.collections.ints.maps.impl.concurrent.Int2ObjectConcurrentOpenHashMap;
 import speiger.src.collections.ints.maps.impl.customHash.Int2ObjectLinkedOpenCustomHashMap;
 import speiger.src.collections.ints.maps.interfaces.Int2ObjectMap;
@@ -13,12 +15,19 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Slf4j
 public final class PageContentIndex {
-    private static final int ESTIMATED_PAGE_COUNT = 2500;
+    /**
+     * Cuz 1.0 load factor is too much for primitive collections apparently XD
+     */
     private static final float LOAD_FACTOR = 0.99f;
+    private static final int ESTIMATED_PAGE_COUNT = 2500;
 
     private final Int2ObjectMap<GraphicsCluster> indexMap;
     private final List<GraphicsCluster> emptyClusters;
@@ -32,6 +41,16 @@ public final class PageContentIndex {
         indexMap = isConcurrent ?
                 new Int2ObjectConcurrentOpenHashMap<>(ESTIMATED_PAGE_COUNT, LOAD_FACTOR) :
                 new Int2ObjectLinkedOpenCustomHashMap<>(ESTIMATED_PAGE_COUNT, LOAD_FACTOR, IntStrategy.NORMAL);
+
+        emptyClusters = isConcurrent ?
+                Collections.synchronizedList(new ArrayList<>()) :
+                new ArrayList<>();
+    }
+
+    public PageContentIndex(boolean isConcurrent, int initialCapacity) {
+        indexMap = isConcurrent ?
+                new Int2ObjectConcurrentOpenHashMap<>(initialCapacity, LOAD_FACTOR) :
+                new Int2ObjectLinkedOpenCustomHashMap<>(initialCapacity, LOAD_FACTOR, IntStrategy.NORMAL);
 
         emptyClusters = isConcurrent ?
                 Collections.synchronizedList(new ArrayList<>()) :
@@ -65,7 +84,7 @@ public final class PageContentIndex {
         GraphicsCluster previousCluster = null;
 
         for (var cluster : successfulClusters) {
-            int hash = cluster.get$clusterHash();
+            int hash = cluster.getClusterHash();
 
             if (cluster.hasEmptyClusterHash()) {
                 emptyClusters.add(cluster);
@@ -89,22 +108,46 @@ public final class PageContentIndex {
         }
     }
 
-    public void traceDuplicateIndexes() {
+    public Stream<String> streamOlderDocVersions() {
         var startingNodes = indexMap.values()
                 .stream()
                 .filter(GraphicsCluster::isStartingNode)
-                .filter(PageContentIndex::documentHasMultipleCitations)
+                .filter(PageContentIndex::documentHasDetectedChanges)
                 .toList();
 
-        log.debug("Remaining Clusters: {}", startingNodes);
+        if (startingNodes.isEmpty()) {
+            log.trace("No duplicate indexes found");
+            return Stream.empty();
+        }
+
+        log.trace("Remaining Clusters: {}", startingNodes);
+
+        var totalGraphString = startingNodes.stream()
+                .map(DAGStringGenerator::generateGraphString)
+                .collect(Collectors.joining());
+
+        log.trace(totalGraphString);
+
+        return startingNodes.stream()
+                .map(PageContentIndex::convertClusterChain)
+                .filter(DuplicateClusterResult::hasYoungestCitation)
+                .flatMap(DuplicateClusterResult::streamOlderCitationNames);
     }
 
-    private static boolean documentHasMultipleCitations(@NonNull GraphicsCluster cluster) {
+    private static DuplicateClusterResult convertClusterChain(GraphicsCluster startingNode) {
+        return startingNode.streamCitations().collect(Collectors.teeing(
+                Collectors.maxBy(GraphicsCluster.PageCitation::compareTo),
+                Collectors.groupingBy(GraphicsCluster.PageCitation::getAbsolutePath),
+                DuplicateClusterResult::ofOptionalCitation
+        ));
+    }
+
+    private static boolean documentHasDetectedChanges(@NonNull GraphicsCluster cluster) {
         Queue<GraphicsCluster> queue = new ArrayDeque<>();
         queue.add(cluster);
         while (!queue.isEmpty()) {
             var next = queue.poll();
-            if (next.hasMultipleCitations()) {
+            if (next.hasMultipleConnections()) {
                 return true;
             }
 
@@ -112,5 +155,31 @@ public final class PageContentIndex {
         }
 
         return false;
+    }
+
+    private record DuplicateClusterResult(@Nullable GraphicsCluster.PageCitation youngestCitation,
+                                          @NonNull Map<String, List<GraphicsCluster.PageCitation>> documentVersions) {
+        private boolean hasYoungestCitation() {
+            if (youngestCitation == null) {
+                log.trace("Youngest citation undetermined for {}", documentVersions);
+            }
+
+            return youngestCitation != null;
+        }
+
+        private Stream<String> streamOlderCitationNames() {
+            if (youngestCitation != null) {
+                return documentVersions.keySet()
+                        .stream()
+                        .filter(path -> !path.equals(youngestCitation.getAbsolutePath()));
+            }
+            return Stream.empty();
+        }
+
+        @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
+        private static DuplicateClusterResult ofOptionalCitation(@NotNull Optional<GraphicsCluster.PageCitation> pageOpt,
+                                                                 Map<String, List<GraphicsCluster.PageCitation>> documentVersions) {
+            return new DuplicateClusterResult(pageOpt.orElse(null), documentVersions);
+        }
     }
 }
