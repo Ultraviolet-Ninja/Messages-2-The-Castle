@@ -49,7 +49,7 @@ public final class DbxLongListFileInfo {
     @NonNull
     private final String noteFileSubdirectory;
 
-    public DbxLongListFileInfo(@NonNull String line) {
+    public DbxLongListFileInfo(@NonNull String line) throws IllegalArgumentException {
         if (line.isBlank()) {
             throw new IllegalArgumentException("Argument should not be blank");
         }
@@ -73,7 +73,11 @@ public final class DbxLongListFileInfo {
             var splitArray = line.split("\\s+", 7);
             currentFileHash = splitArray[0];
             fileSize = Double.parseDouble(splitArray[1]);
-            fileSizePrefix = splitArray[2].contains(FileSizeType.KIBIBYTES.getAbbreviation()) ? FileSizeType.KIBIBYTES : FileSizeType.MEBIBYTES;
+
+            fileSizePrefix = splitArray[2].contains(FileSizeType.KIBIBYTES.getAbbreviation()) ?
+                    FileSizeType.KIBIBYTES :
+                    FileSizeType.MEBIBYTES;
+
             modificationAge = Integer.parseInt(splitArray[3]);
             modificationAgeUnit = extractTimeUnit(splitArray[4]);
         }
