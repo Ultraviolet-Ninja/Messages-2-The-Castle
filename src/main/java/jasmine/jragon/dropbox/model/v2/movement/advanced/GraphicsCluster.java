@@ -1,12 +1,11 @@
 package jasmine.jragon.dropbox.model.v2.movement.advanced;
 
-import jasmine.jragon.tuple.type.Duo;
 import lombok.AccessLevel;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
-import lombok.ToString;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
@@ -20,13 +19,16 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Queue;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * The {@code GraphicsCluster} captures all the content data of a single page of a PDF document that's retrieved
@@ -34,12 +36,15 @@ import java.util.stream.Collectors;
  * inside the cluster</b> because we're trying to establish whether 2 documents are the same or similar based on
  * the content of their pages.
  */
+@Slf4j
 @EqualsAndHashCode(
         doNotUseGetters = true,
         of = {"pageNumber", "graphicsNodes"},
         cacheStrategy = EqualsAndHashCode.CacheStrategy.LAZY
 )
 final class GraphicsCluster {
+    private static final DateTimeFormatter DESIRED_VIEW_FORMAT = DateTimeFormatter.ofPattern("MM/dd/yyyy HH:mm:ss");
+
     private final Set<GraphicsCluster> incomingNodes;
     private final Set<GraphicsCluster> outgoingNodes;
     private final Set<PageCitation> foundPaths;
@@ -48,7 +53,6 @@ final class GraphicsCluster {
     private final int pageNumber;
     private final List<GraphicsNode> graphicsNodes;
 
-    @Getter
     private transient final int $clusterHash;
 
     GraphicsCluster(@NonNull String absolutePath, int pageNumber, @NonNull List<PDAnnotation> annotations)
@@ -57,8 +61,8 @@ final class GraphicsCluster {
         graphicsNodes = extractNodes(annotations);
         $clusterHash = graphicsNodes.isEmpty() ? 0 : graphicsNodes.hashCode();
 
-        incomingNodes = new HashSet<>(5, 1.0f);
-        outgoingNodes = new HashSet<>(5, 1.0f);
+        incomingNodes = new HashSet<>(3, 1.0f);
+        outgoingNodes = new HashSet<>(3, 1.0f);
         foundPaths = new TreeSet<>();
         foundPaths.add(new PageCitation(
                 absolutePath, pageNumber,
@@ -73,8 +77,9 @@ final class GraphicsCluster {
         }
 
         return annotations.stream()
-                .map(annotation -> Duo.of(navigateToBBox(annotation), annotation.getModifiedDate()))
-                .map(duo -> GraphicsNode.create(duo.first(), duo.second()))
+                .map(annotation -> GraphicsNode.create(
+                        navigateToBBox(annotation), annotation.getModifiedDate()
+                ))
                 .toList();
     }
 
@@ -95,30 +100,53 @@ final class GraphicsCluster {
         incomingNodes.add(node);
     }
 
-    public void linkClusters(@NonNull GraphicsCluster node) {
+    void linkClusters(@NonNull GraphicsCluster node) {
         outgoingNodes.add(node);
         node.addIncomingNode(this);
     }
 
-    public void addNewPathsFromCluster(@NonNull GraphicsCluster cluster) {
+    void addNewPathsFromCluster(@NonNull GraphicsCluster cluster) {
         foundPaths.addAll(cluster.foundPaths);
     }
 
-    public boolean isStartingNode() {
+    boolean isStartingNode() {
         return incomingNodes.isEmpty();
     }
 
-    public boolean hasEmptyClusterHash() {
+    boolean hasEmptyClusterHash() {
         return $clusterHash == 0;
     }
 
+    int getClusterHash() {
+        return $clusterHash;
+    }
+
     @Contract(pure = true)
-    public @NotNull @UnmodifiableView Set<GraphicsCluster> getOutgoingNodes() {
+    @NotNull @UnmodifiableView Set<GraphicsCluster> getOutgoingNodes() {
         return Collections.unmodifiableSet(outgoingNodes);
     }
 
-    public boolean hasMultipleCitations() {
-        return foundPaths.size() > 1;
+    Stream<PageCitation> streamCitations() {
+        if (!isStartingNode()) {
+            return Stream.empty();
+        }
+
+        Stream.Builder<PageCitation> builder = Stream.builder();
+
+        Queue<GraphicsCluster> queue = new ArrayDeque<>();
+        queue.add(this);
+        while (!queue.isEmpty()) {
+            var next = queue.poll();
+            next.foundPaths.forEach(builder::add);
+
+            queue.addAll(next.getOutgoingNodes());
+        }
+
+        return builder.build();
+    }
+
+    boolean hasMultipleConnections() {
+        return foundPaths.size() > 1 || outgoingNodes.size() > 1;
     }
 
     @Override
@@ -132,61 +160,71 @@ final class GraphicsCluster {
 
     /**
      * A {@code GraphicsNode} represents the important information from one annotation from a Boox Note PDF.
-     * The important content involve the {@linkplain #compressedStream stream data from the PDF BBox}
+     * The important content involve the {@linkplain #compressedStreamSample stream data from the PDF BBox}
      * that the annotation points to, the {@linkplain #modTime modification time} the BBox was last updated,
      * and the {@linkplain #location location of the BBox} specified as a float array.
      * All but the modTime are used to calculate the {@linkplain #hashCode() hashcode}  of a {@code GraphicsNode}
      */
+    @SuppressWarnings("ClassCanBeRecord")
     @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
     @EqualsAndHashCode(
-            of = {"compressedStream", "location"},
+            of = {"compressedStreamSample", "location"},
             doNotUseGetters = true,
             cacheStrategy = EqualsAndHashCode.CacheStrategy.LAZY
     )
-    static final class GraphicsNode {
-        private static final DateTimeFormatter NOTE_FILE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss"),
-                TO_STRING_FORMAT = DateTimeFormatter.ofPattern("MM/dd/yyyy HH:mm:ss");
-        //A time before normalcy was ripped away from us XD
+    private static final class GraphicsNode {
+        private static final int COMPRESSED_STREAM_CHAR_COUNT = 60;
+        private static final DateTimeFormatter NOTE_FILE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+        /**
+         * A time before normalcy was ripped away from us XD
+         */
         private static final LocalDateTime BLANK_MOD_TIME = LocalDateTime.of(
                 2020, 1, 1,
                 0, 0, 0
         );
 
         @NonNull
-        private final String compressedStream;
+        private final String compressedStreamSample;
         private final float @NonNull [] location;
         @NonNull
         private final LocalDateTime modTime;
 
         private static GraphicsNode create(@NonNull COSStream bBoxStream, @Nullable String modString) {
-            String rawContent;
+            String compressedContent;
             try (var rawStream = bBoxStream.createRawInputStream();
                  var bufferedReader = new BufferedReader(new InputStreamReader(rawStream))) {
-                rawContent = bufferedReader
+                compressedContent = bufferedReader
                         .lines()
+                        .flatMap(l -> Arrays.stream(l.split("")))
+                        .limit(COMPRESSED_STREAM_CHAR_COUNT)
                         .collect(Collectors.joining());
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }
 
             return new GraphicsNode(
-                    rawContent,
+                    compressedContent,
                     bBoxStream.getCOSArray(COSName.BBOX).toFloatArray(),
                     convertModificationTime(modString)
             );
         }
 
         private static LocalDateTime convertModificationTime(String modString) {
-            return modString != null && modString.matches("D:\\d{14}") ?
-                    LocalDateTime.parse(modString.substring(2), NOTE_FILE_TIME_FORMAT) :
-                    BLANK_MOD_TIME;
+            if (modString != null && modString.matches("D:\\d{14}")) {
+                return LocalDateTime.parse(modString.substring(2), NOTE_FILE_TIME_FORMAT);
+            } else if (modString != null && !modString.isBlank()) {
+                log.warn("Surprise time format detected: {}", modString);
+            }
+
+            return BLANK_MOD_TIME;
         }
 
         @Override
         public @NotNull String toString() {
             return String.format("Location %s - %s",
                     Arrays.toString(location),
-                    modTime.format(TO_STRING_FORMAT)
+                    modTime.format(DESIRED_VIEW_FORMAT)
             );
         }
     }
@@ -195,10 +233,10 @@ final class GraphicsCluster {
      * The {@code PageCitation} is a compact place to hold page information to compare to pages of other documents
      * that contain the exact same content.
      */
-    @ToString
     @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
     @EqualsAndHashCode(doNotUseGetters = true, cacheStrategy = EqualsAndHashCode.CacheStrategy.LAZY)
     static final class PageCitation implements Comparable<PageCitation> {
+        @Getter(value = AccessLevel.PACKAGE)
         private final String absolutePath;
         private final int pageNumber;
         private final LocalDateTime modTime;
@@ -206,6 +244,12 @@ final class GraphicsCluster {
         @Override
         public int compareTo(@NotNull GraphicsCluster.PageCitation o) {
             return this.modTime.compareTo(o.modTime);
+        }
+
+        @Override
+        public @NotNull String toString() {
+            return String.format("PageCitation(ModTime: %s -> absolutePath=%s Page %d)",
+                    modTime.format(DESIRED_VIEW_FORMAT), absolutePath, pageNumber);
         }
     }
 }
