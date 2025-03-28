@@ -142,4 +142,45 @@ public final class DropboxFunctionManager {
                 .filter(FileMove::isValidMove)
                 .distinct();
     }
+
+    public static void removeDropboxResource(@NotNull RemoveCommand removeCommand) {
+        try {
+            var output = removeCommand.execute();
+            if (output.isError()) {
+                LOG.warn(output.errorMessage());
+            }
+        } catch (InterruptedException e) {
+            LOG.error("Timeout: ", e);
+        } catch (IllegalStateException e) {
+            LOG.error("Operation took too long: ", e);
+        }
+    }
+
+    public static void wipeEmptyDirectories(@NonNull @Unmodifiable List<String> files,
+                                            @NonNull @Unmodifiable List<String> folders,
+                                            @NonNull DropboxSession session) {
+        var fileGroups = files.stream()
+                .map(DropboxFunctionManager::getPathToResource)
+                .collect(Collectors.toUnmodifiableSet());
+
+        var folderGroups = folders.stream()
+                .map(DropboxFunctionManager::getPathToResource)
+                .collect(Collectors.toUnmodifiableSet());
+
+        var reportedEmptyFolders = folders.stream()
+                .filter(f -> !fileGroups.contains(f) && !folderGroups.contains(f))
+                .toList();
+
+        if (!reportedEmptyFolders.isEmpty()) {
+            LOG.trace("Reported empty folders: {}", reportedEmptyFolders);
+
+            reportedEmptyFolders.stream()
+                    .map(session::remove)
+                    .forEach(DropboxFunctionManager::removeDropboxResource);
+        }
+    }
+
+    private static String getPathToResource(String resource) {
+        return resource.substring(0, Math.max(resource.lastIndexOf('/'), 0));
+    }
 }
