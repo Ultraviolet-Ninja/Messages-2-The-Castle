@@ -24,16 +24,17 @@ dependencies {
     annotationProcessor 'org.projectlombok:lombok:1.18.36'
 
     implementation files('libs/DBX-CLI-wrapper-1.5.4v17.jar', 'libs/MegaCmdRewrite-1.2.1.jar',
-            'libs/Utility-Belt-1.2.2v17.jar')
+            'libs/Utility-Belt-1.2.3v17.jar')
 
-//    implementation 'me.tongfei:progressbar:0.9.5'
+    implementation 'org.json:json:20250107'
+    implementation 'me.tongfei:progressbar:0.10.1'
     implementation 'org.javatuples:javatuples:1.2'
     implementation 'org.apache.pdfbox:pdfbox:3.0.2'
-    implementation 'org.jetbrains:annotations:26.0.1'
-    implementation 'ch.qos.logback:logback-classic:1.5.16'
+    implementation 'org.jetbrains:annotations:26.0.2'
+    implementation 'ch.qos.logback:logback-classic:1.5.18'
     implementation 'io.github.speiger:Primitive-Collections:0.9.0'
 
-    testImplementation 'org.testng:testng:7.10.2'
+    testImplementation 'org.testng:testng:7.11.0'
 }
 
 compileJava {
