@@ -1,15 +1,17 @@
 package jasmine.jragon;
 
+import jasmine.jragon.dropbox.DropboxFunctionManager;
 import jasmine.jragon.dropbox.cli.command.DropboxSession;
-import jasmine.jragon.dropbox.cli.command.RemoveCommand;
 import jasmine.jragon.dropbox.model.v2.DbxLongListFileInfo;
 import jasmine.jragon.dropbox.model.v2.IntermediateFile;
 import jasmine.jragon.dropbox.model.v2.movement.simple.FileMove;
 import jasmine.jragon.dropbox.model.v2.movement.advanced.PageContentIndex;
+import jasmine.jragon.mega.MegaFunctionManager;
 import jasmine.jragon.mega.eliux.v2.Mega;
 import jasmine.jragon.mega.eliux.v2.MegaSession;
 import jasmine.jragon.mega.eliux.v2.auth.MegaAuthSessionID;
 import jasmine.jragon.stream.support.IntermediateUtils;
+import jasmine.jragon.tuple.type.Duo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,12 +32,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static jasmine.jragon.FileTransferManager.conductFileTransfer;
-import static jasmine.jragon.LocalFileManager.attemptFileDeletion;
+import static jasmine.jragon.LocalResourceManager.attemptFileDeletion;
+import static jasmine.jragon.dropbox.DropboxFunctionManager.wipeEmptyDirectories;
 import static jasmine.jragon.dropbox.DropboxFunctionManager.splitDropboxFoldersAndFiles;
 import static jasmine.jragon.dropbox.DropboxFunctionManager.reduceRetrievalList;
 import static jasmine.jragon.dropbox.DropboxFunctionManager.retrieveSimpleFileMovements;
@@ -43,9 +45,10 @@ import static jasmine.jragon.mega.MegaFunctionManager.crashCloudDirectory;
 import static jasmine.jragon.mega.MegaFunctionManager.createAnnotationSubdirectories;
 import static java.util.concurrent.CompletableFuture.runAsync;
 
-public final class MegaUpload {
+public final class TransportDriver {
     private static final String LOGGING_BOUNDARY = '+' + "-".repeat(40) + '+';
-    private static final String SESSION_ID = "";
+    private static final String SESSION_ID =
+            "AafZa0d24-6hidQSjsqk1AuwPwXuI6RxWi5fpLNOGA3pSFdCRWdtVThuaVlLTG8aSlPeNIS8PGvsRIbH";
 
     private static final String REVISION_FILE_NAME = "revision-list.txt";
 
@@ -54,7 +57,7 @@ public final class MegaUpload {
 
     private static final boolean DBX_FILES = true, DBX_FOLDERS = false;
 
-    private static final Logger LOG = LoggerFactory.getLogger(MegaUpload.class);
+    private static final Logger LOG = LoggerFactory.getLogger(TransportDriver.class);
 
     public static void main(String[] args) {
         LOG.info(LOGGING_BOUNDARY);
@@ -69,6 +72,8 @@ public final class MegaUpload {
             executeFileTransfer(commandMap);
         } catch (InterruptedException e) {
             LOG.error("Interruption Exception at ls command: ", e);
+        } catch (RuntimeException e) {
+            LOG.error("Fatal Runtime Exception occurred in the system: ", e);
         }
 
         logRuntime(System.nanoTime() - start);
@@ -76,15 +81,15 @@ public final class MegaUpload {
 
     private static void executeFileTransfer(Map<String, String> commandMap) throws InterruptedException {
         var dropboxSession = new DropboxSession(false);
-
-        LOG.info("Logging into Mega Cloud");
         var megaCloudSession = Mega.login(new MegaAuthSessionID(SESSION_ID));
-        LOG.info("Who Am I: {}", megaCloudSession.whoAmI());
+
+        LOG.info("Logging into Mega Cloud - Who Am I: {}", megaCloudSession.whoAmI());
 
         var downloadDestinationDirectory = setFileDownloadLocation(commandMap);
+        boolean crashDirectory = commandMap.containsKey(CRASH_CLOUD_DIR_ARG) &&
+                commandMap.get(CRASH_CLOUD_DIR_ARG).equalsIgnoreCase("True");
 
-        if (commandMap.containsKey(CRASH_CLOUD_DIR_ARG) &&
-                commandMap.get(CRASH_CLOUD_DIR_ARG).equalsIgnoreCase("True")) {
+        if (crashDirectory) {
             crashCloudDirectory(megaCloudSession, doesRevisionFileExist(), REVISION_FILE_NAME);
         }
 
@@ -95,8 +100,10 @@ public final class MegaUpload {
         }
 
         var filesAndFolders = filesFoldersMapOptional.get();
-        var annotationsDirectoryFutureOpt = refreshAnnotationSubdirectories(megaCloudSession,
-                filesAndFolders.get(DBX_FOLDERS));
+        var annotationsDirectoryFutureOpt = refreshAnnotationSubdirectories(
+                megaCloudSession,
+                filesAndFolders.get(DBX_FOLDERS)
+        );
 
         var dropboxFilePaths = filesAndFolders.get(DBX_FILES);
         dropboxFilePaths.sort(DbxLongListFileInfo::compareByFilename);
@@ -109,6 +116,12 @@ public final class MegaUpload {
             reduceRetrievalList(dropboxFilePaths, REVISION_FILE_NAME);
         }
 
+        wipeEmptyDirectories(
+                filePathsClone.stream().map(DbxLongListFileInfo::toString).toList(),
+                filesAndFolders.get(DBX_FOLDERS).stream().map(DbxLongListFileInfo::toString).toList(),
+                dropboxSession
+        );
+
         if (dropboxFilePaths.isEmpty()) {
             LOG.info("No changes detected. Shutting down");
             return;
@@ -117,19 +130,13 @@ public final class MegaUpload {
         var overwriteRevisionFileFuture = runAsync(() -> overwriteRevisionFile(filePathsClone));
 
         var errorsContentIndexDuo = conductFileTransfer(dropboxFilePaths, dropboxSession,
-                megaCloudSession, downloadDestinationDirectory);
-        conductAdvancedFileMoves(errorsContentIndexDuo.second());
+                megaCloudSession, downloadDestinationDirectory, crashDirectory);
 
-        try {
-            overwriteRevisionFileFuture.get();
-            cleanUpErrorFromRevisionFile(errorsContentIndexDuo.first());
+        conductAdvancedFileMoves(errorsContentIndexDuo.second(), megaCloudSession, dropboxSession);
 
-            if (annotationsDirectoryFutureOpt.isPresent()) {
-                annotationsDirectoryFutureOpt.get().get();
-            }
-        } catch (ExecutionException e) {
-            LOG.error("Revision File Overwrite Error: ", e);
-        }
+        finishRevisionFileChanges(overwriteRevisionFileFuture, errorsContentIndexDuo.first());
+
+        annotationsDirectoryFutureOpt.ifPresent(TransportDriver::finishAnnotationSubdirGeneration);
     }
 
     private static String setFileDownloadLocation(Map<String, String> commandMap) {
@@ -169,8 +176,19 @@ public final class MegaUpload {
                 .forEach(DropboxFunctionManager::removeDropboxResource);
     }
 
-    private static void conductAdvancedFileMoves(PageContentIndex contentIndex) {
-        contentIndex.traceDuplicateIndexes();
+    private static void conductAdvancedFileMoves(PageContentIndex contentIndex, MegaSession megaSession,
+                                                 DropboxSession dropboxSession) {
+        contentIndex.streamOlderDocVersions()
+                .map(IntermediateFile::new)
+//                .forEach(intermediateFile -> LOG.info("Results: {}", intermediateFile)); //For testing
+                .map(intermediateFile -> Duo.of(
+                        intermediateFile.getMegaCloudPath(),
+                        dropboxSession.remove(intermediateFile.getDropboxFilePath())
+                ))
+                .forEach(removalDuo -> {
+                    MegaFunctionManager.removeOldFile(megaSession, removalDuo.first());
+                    DropboxFunctionManager.removeDropboxResource(removalDuo.second());
+                });
     }
 
     private static void overwriteRevisionFile(List<DbxLongListFileInfo> fileInfoList) {
@@ -188,9 +206,16 @@ public final class MegaUpload {
         }
     }
 
-    private static void cleanUpErrorFromRevisionFile(List<String> erroneousFiles) {
+    private static void finishRevisionFileChanges(CompletableFuture<Void> overwriteRevisionFileFuture,
+                                                  List<String> erroneousFiles) {
+        try {
+            overwriteRevisionFileFuture.get();
+        }  catch (ExecutionException | InterruptedException e) {
+            LOG.error("Revision File Overwrite Error: ", e);
+        }
+
         if (!erroneousFiles.isEmpty()) {
-            LOG.warn("Error Files: {}", erroneousFiles);
+            LOG.warn("{} Error File(s): {}", erroneousFiles.size(), erroneousFiles);
             clearErrorsFromRevisionFile(erroneousFiles);
         }
     }
@@ -221,6 +246,14 @@ public final class MegaUpload {
         }
     }
 
+    private static void finishAnnotationSubdirGeneration(CompletableFuture<Void> annotationFuture) {
+        try {
+            annotationFuture.get();
+        } catch (ExecutionException | InterruptedException e) {
+            LOG.error("Annotation Directory Generation Error: ", e);
+        }
+    }
+
     private static Map<String, String> parseCommandLineArgs(String[] args) {
         Predicate<String> logBadArguments = arg -> {
             if (arg.matches("[\\w\\-]+:[\\w\\-]+")) {
@@ -233,7 +266,7 @@ public final class MegaUpload {
         return Arrays.stream(args)
                 .filter(logBadArguments)
                 .map(arg -> arg.split(":"))
-                .collect(Collectors.toMap(
+                .collect(Collectors.toUnmodifiableMap(
                         array -> array[0],
                         array -> array[1]
                 ));
@@ -241,12 +274,23 @@ public final class MegaUpload {
 
     private static void logRuntime(long timeToRun) {
         Duration elapsedTime = Duration.ofNanos(timeToRun);
+        long elapsedTimeInHours = elapsedTime.toHoursPart();
         long elapsedTimeInMinutes = elapsedTime.toMinutesPart();
         long elapsedTimeInSeconds = elapsedTime.toSecondsPart();
 
-        String minuteFormat = "minute" + (elapsedTimeInMinutes == 1 ? "" : "s");
-        String secondFormat = "second" + (elapsedTimeInSeconds == 1 ? "" : "s");
+        var minuteFormat = "minute" + (elapsedTimeInMinutes == 1 ? "" : "s");
+        var secondFormat = "second" + (elapsedTimeInSeconds == 1 ? "" : "s");
 
-        LOG.info("Duration: {} {} - {} {}", elapsedTimeInMinutes, minuteFormat, elapsedTimeInSeconds, secondFormat);
+        if (elapsedTimeInHours == 0) {
+            LOG.info("Duration: {} {} - {} {}", elapsedTimeInMinutes, minuteFormat, elapsedTimeInSeconds, secondFormat);
+        } else {
+            var hourFormat = "hour" + (elapsedTimeInHours == 1 ? "" : "s");
+
+            LOG.info("Duration: {} {} - {} {} - {} {}",
+                    elapsedTimeInHours, hourFormat,
+                    elapsedTimeInMinutes, minuteFormat,
+                    elapsedTimeInSeconds, secondFormat
+            );
+        }
     }
 }

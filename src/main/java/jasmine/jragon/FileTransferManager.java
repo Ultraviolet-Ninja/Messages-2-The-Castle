@@ -11,86 +11,151 @@ import jasmine.jragon.stream.support.IntermediateUtils;
 import jasmine.jragon.tuple.type.Duo;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
+import me.tongfei.progressbar.ProgressBar;
+import me.tongfei.progressbar.ProgressBarStyle;
+import org.apache.pdfbox.pdmodel.PDDocument;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveAction;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import static jasmine.jragon.LocalResourceManager.attemptFileDeletion;
 import static jasmine.jragon.dropbox.DropboxFunctionManager.downloadFile;
 import static jasmine.jragon.mega.MegaFunctionManager.sendFileToMega;
+import static jasmine.jragon.progress.bar.ProgressBarGenerator.generateProgressBar;
+import static jasmine.jragon.progress.bar.ProgressBarGenerator.generateProgressBarStyle;
+import static jasmine.jragon.progress.bar.ProgressBarGenerator.generateSubProgressBar;
 
 public final class FileTransferManager {
     private static final Logger LOG = LoggerFactory.getLogger(FileTransferManager.class);
 
     private static final int CONCURRENCY_THRESHOLD = 20;
     private static final int CONCURRENCY_COUNT = 4;
-//    private static final int NEW_CONCURRENCY_COUNT = 3;
+    private static final int DOWNSIZED_CAPACITY = 50;
+
+    private static final String PROGRESS_BAR_TITLE = "Transporting Documents";
+    private static final String UNIT_NAME = " PDFs";
+    private static final int UNIT_COUNT = 1;
+
+    private static final ProgressBarStyle RUNTIME_SUB_BAR_STYLE = generateProgressBarStyle();
 
     static @NotNull Duo<List<String>, PageContentIndex> conductFileTransfer(
             @NonNull List<DbxLongListFileInfo> dropboxFiles, @NonNull DropboxSession dropboxSession,
-            @NonNull MegaSession megaCloudSession, @NonNull String downloadDestinationDirectory) {
+            @NonNull MegaSession megaCloudSession, @NonNull String downloadDestinationDirectory,
+            boolean crashDirectory) {
+        int transferSize = dropboxFiles.size();
+        boolean remainSequential = transferSize < CONCURRENCY_THRESHOLD;
 
-        boolean remainSequential = dropboxFiles.size() < CONCURRENCY_THRESHOLD;
+        var contentIndex = crashDirectory ?
+                new PageContentIndex(!remainSequential) :
+                new PageContentIndex(!remainSequential, DOWNSIZED_CAPACITY);
 
-        var contentIndex = new PageContentIndex(!remainSequential);
         List<String> erroneousFiles = remainSequential ?
                 new ArrayList<>() :
-                Collections.synchronizedList(new ArrayList<>());
+                new CopyOnWriteArrayList<>();
 
-        Function<DbxLongListFileInfo, GetCommand> createDropboxGetCommand = downloadDestinationDirectory.isEmpty() ?
-                file -> dropboxSession.getFile(file.toString()) :
-                file -> dropboxSession.getFile(file.toString(), downloadDestinationDirectory);
+        try (var topLevelProgressBar = generateProgressBar(transferSize,
+                PROGRESS_BAR_TITLE, UNIT_NAME, UNIT_COUNT, generateProgressBarStyle())) {
+            var fileTransferAction = curryTransferFunction(
+                    dropboxSession, megaCloudSession, downloadDestinationDirectory,
+                    contentIndex, erroneousFiles, topLevelProgressBar
+            );
 
-        Function<String, IntermediateFile> createIntermediateFile = downloadDestinationDirectory.isEmpty() ?
-                IntermediateFile::new :
-                dropboxFile -> new IntermediateFile(dropboxFile, downloadDestinationDirectory);
-
-        Consumer<IntermediateFile> populateIndex = intermediateFile -> {
-            try (var document = intermediateFile.createPDF()) {
-                contentIndex.addDocument(intermediateFile.getDropboxFilePath(), document.getPages());
-            } catch (IOException e) {
-                LOG.warn("{} triggered an issue during indexing: {}", intermediateFile, e.getMessage());
-            } catch (IllegalArgumentException e) {
-                LOG.warn("Fucking Duh: {}", e.getMessage());
+            if (remainSequential) {
+                try (var fileLevelProgressBar = generateSubProgressBar("Main Thread", RUNTIME_SUB_BAR_STYLE)) {
+                    fileTransferAction.accept(dropboxFiles, fileLevelProgressBar);
+                }
+            } else {
+                LOG.debug("Concurrency Enabled");
+                conductConcurrentFileTransfer(dropboxFiles, fileTransferAction);
             }
-        };
-
-        Consumer<List<DbxLongListFileInfo>> fileTransferAction = cloudPath -> cloudPath.stream()
-                .map(createDropboxGetCommand)
-                .map(getCommand -> downloadFile(getCommand, erroneousFiles))
-                .flatMap(IntermediateUtils::eliminateOptional)
-                //Create the intermediate file
-                .map(createIntermediateFile)
-                //Populating a content index to look for more complicated file moves
-                //that include a change in file names
-                .peek(populateIndex)
-                //Insert the text boxes before uploading to MEGA
-                .peek(PDFEditor::customizeDocFile)
-                .peek(file -> sendFileToMega(file, megaCloudSession, erroneousFiles))
-                .forEach(file -> attemptFileDeletion(file.createLocalFileObject()));
-
-        if (remainSequential) {
-            fileTransferAction.accept(dropboxFiles);
-        } else {
-            LOG.debug("Concurrency Enabled");
-            conductConcurrentFileTransfer(dropboxFiles, fileTransferAction);
         }
 
         return Duo.of(erroneousFiles, contentIndex);
     }
 
+    private static BiConsumer<List<DbxLongListFileInfo>, ProgressBar> curryTransferFunction(
+            DropboxSession dropboxSession, MegaSession megaCloudSession,
+            String downloadDestinationDirectory, PageContentIndex contentIndex,
+            List<String> erroneousFiles, ProgressBar topLevelProgressBar) {
+        Function<DbxLongListFileInfo, GetCommand> createDropboxGetCommand = downloadDestinationDirectory.isBlank() ?
+                file -> dropboxSession.getFile(file.toString()) :
+                file -> dropboxSession.getFile(file.toString(), downloadDestinationDirectory);
+
+        Function<String, IntermediateFile> createIntermediateFile = downloadDestinationDirectory.isBlank() ?
+                IntermediateFile::new :
+                dropboxFile -> new IntermediateFile(dropboxFile, downloadDestinationDirectory);
+
+        BiConsumer<PDDocument, String> populateIndex = (document, dropboxFile) -> {
+            try {
+                contentIndex.addDocument(dropboxFile, document.getPages());
+            } catch (IllegalArgumentException e) {
+                LOG.warn("Fucking Duh: {}", e.getMessage());
+            }
+        };
+
+        return (cloudPath, subProgressBar) -> cloudPath.stream()
+                .peek(dbxFile -> {
+                    subProgressBar.reset();
+                    subProgressBar.setExtraMessage(dbxFile.getFileName());
+                })
+                .map(createDropboxGetCommand)
+                .map(getCommand -> {
+                    var downloadOpt = downloadFile(getCommand, erroneousFiles);
+
+                    if (downloadOpt.isPresent()) {
+                        subProgressBar.step();
+                    } else {
+                        subProgressBar.reset();
+                    }
+                    return downloadOpt;
+                })
+                .flatMap(IntermediateUtils::eliminateOptional)
+                //Create the intermediate file
+                .map(createIntermediateFile)
+                .forEach(file -> {
+                    /*
+                     * Populating a content index to look for more complicated file moves
+                     * that include a change in file names or
+                     * movements with longer distances than what the simple moves can detect
+                     */
+                    file.operateOnDropboxPDF(populateIndex);
+
+                    //Insert the text boxes before uploading to MEGA
+                    PDFEditor.customizeDocFile(file);
+                    subProgressBar.step();
+
+                    sendFileToMega(file, megaCloudSession, erroneousFiles);
+                    subProgressBar.step();
+                    attemptFileDeletion(file.createLocalFileObject());
+                    subProgressBar.setExtraMessage("");
+
+                    topLevelProgressBar.step();
+                });
+    }
+
     private static void conductConcurrentFileTransfer(List<DbxLongListFileInfo> dropboxFiles,
-                                                      Consumer<List<DbxLongListFileInfo>> transferConsumer) {
+                                                      BiConsumer<List<DbxLongListFileInfo>, ProgressBar> transferConsumer) {
+        /*
+         * Some files will have the same filename, which will cause problems
+         * if we download X.pdf from one directory, then it gets overwritten
+         * by X.pdf from another directory
+         *
+         * So, we sort them by specifically the filename (excluding the path)
+         * to mitigate the amount of overwriting, presumably to 0,
+         * unless the amount of files with the same name exceeds 2 FJ partition sizes
+         */
         dropboxFiles.sort(DbxLongListFileInfo::compareByFilename);
 
 //        var futureList = partitionList(dropboxFiles)
@@ -106,9 +171,16 @@ public final class FileTransferManager {
 //            }
 //        }
 
+//        Map<String, ProgressBar> subProgressBars = new ConcurrentHashMap<>(CONCURRENCY_COUNT + 1, 1.0f);
+        Map<String, ProgressBar> subProgressBars = Collections.synchronizedMap(
+                new HashMap<>(CONCURRENCY_COUNT + 1, 1.0f)
+        );
         var forkJoinPool = new ForkJoinPool(CONCURRENCY_COUNT);
 
-        forkJoinPool.invoke(new FileTransferTask(dropboxFiles, transferConsumer));
+        forkJoinPool.invoke(new FileTransferTask(dropboxFiles, transferConsumer, subProgressBars));
+
+        subProgressBars.values()
+                .forEach(ProgressBar::close);
     }
 
 //    private static <T> List<List<T>> partitionList(List<T> list) {
@@ -126,27 +198,34 @@ public final class FileTransferManager {
 
     @RequiredArgsConstructor
     private static final class FileTransferTask extends RecursiveAction {
-        private static final int LIST_PARTITION_SIZE = 5;
+        private static final int LIST_PARTITION_SIZE = 10;
 
         @NonNull
         private final List<DbxLongListFileInfo> filePaths;
         @NonNull
-        private final Consumer<List<DbxLongListFileInfo>> transferConsumer;
+        private final BiConsumer<List<DbxLongListFileInfo>, ProgressBar> transferConsumer;
+        @NonNull
+        private final Map<String, ProgressBar> subProgressBars;
 
         @Override
         protected void compute() {
             if (filePaths.size() > LIST_PARTITION_SIZE) {
                 ForkJoinTask.invokeAll(divideTask());
             } else {
-                transferConsumer.accept(filePaths);
+                var threadName = Thread.currentThread().getName();
+                var currentSubProgressBar = subProgressBars.computeIfAbsent(
+                        threadName,
+                        thread -> generateSubProgressBar(thread, RUNTIME_SUB_BAR_STYLE)
+                );
+                transferConsumer.accept(filePaths, currentSubProgressBar);
             }
         }
 
         private List<FileTransferTask> divideTask() {
             int size = filePaths.size();
             int halfSize = size >> 1;
-            var taskOne = new FileTransferTask(filePaths.subList(0, halfSize), transferConsumer);
-            var taskTwo = new FileTransferTask(filePaths.subList(halfSize, size), transferConsumer);
+            var taskOne = new FileTransferTask(filePaths.subList(0, halfSize), transferConsumer, subProgressBars);
+            var taskTwo = new FileTransferTask(filePaths.subList(halfSize, size), transferConsumer, subProgressBars);
             return new ArrayList<>(List.of(taskOne, taskTwo));
         }
     }

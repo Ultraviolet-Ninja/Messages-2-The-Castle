@@ -6,7 +6,9 @@ import jasmine.jragon.dropbox.model.v2.IntermediateFile;
 import jasmine.jragon.mega.eliux.v2.MegaSession;
 import jasmine.jragon.mega.eliux.v2.cmd.MegaCmdPutSingle;
 import jasmine.jragon.mega.eliux.v2.error.MegaException;
+import jasmine.jragon.mega.eliux.v2.error.MegaInvalidStateException;
 import jasmine.jragon.mega.eliux.v2.error.MegaResourceNotFoundException;
+import lombok.NonNull;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +39,8 @@ public final class MegaFunctionManager {
             removeCommand.run();
         } catch (MegaResourceNotFoundException resourceException) {
             LOG.debug("Directory is already removed. Proceeding...");
+        } catch (MegaException e) {
+            LOG.error("Unusual Error at Directory Wipe: ", e);
         }
     }
 
@@ -52,8 +56,15 @@ public final class MegaFunctionManager {
         try {
             command.run();
         } catch (MegaException e) {
-            LOG.error(e.getMessage(), e);
-            attemptFileDeletion(command.getLocalFile());
+            LOG.warn("Upload function issue: ", e);
+
+            /*
+             * Deletion occurs regardless of whether there was an issue or not,
+             * so this doesn't seem to be needed here.
+             *
+             * attemptFileDeletion(command.getLocalFile());
+             */
+
             //Stores the dropbox file for deletion later from the revision-list.txt file
             erroneousFileList.add(dropboxFile);
         }
@@ -72,7 +83,7 @@ public final class MegaFunctionManager {
     }
 
     private static String convertDropboxToMegaAnnotationPath(DbxLongListFileInfo dropboxFolder) {
-        String outputPath = dropboxFolder.toString();
+        var outputPath = dropboxFolder.toString();
 
         for (var prefixPath : DROPBOX_PATH_PREFIX_LIST) {
             outputPath = outputPath.replace(prefixPath, "");
@@ -81,13 +92,29 @@ public final class MegaFunctionManager {
         return ANNOTATION_DIRECTORY + outputPath;
     }
 
+    public static void removeOldFile(@NotNull MegaSession session, @NonNull String filePath) {
+        var rmCommand = session.remove(filePath);
+
+        try {
+            rmCommand.run();
+        } catch (MegaResourceNotFoundException resourceException) {
+            LOG.warn("File Removal Issue: ", resourceException);
+        } catch (MegaException e) {
+            LOG.error("Unusual Error at Mega File Removal: ", e);
+        }
+    }
+
     private static boolean makeMegaDirectory(String megaPath, MegaSession megaSession) {
         var command = megaSession.makeDirectory(megaPath).recursively();
 
         try {
             command.run();
             return false;
+        } catch (MegaInvalidStateException e) {
+            LOG.trace("Assuming that the directory already exists. Proceeding...");
+            return false;
         } catch (MegaException e) {
+            LOG.warn("Unusual Error at Mega Directory Creation: ", e);
             return true;
         }
     }

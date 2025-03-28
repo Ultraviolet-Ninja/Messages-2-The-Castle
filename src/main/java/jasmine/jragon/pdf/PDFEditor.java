@@ -2,6 +2,7 @@ package jasmine.jragon.pdf;
 
 import jasmine.jragon.LocalResourceManager;
 import jasmine.jragon.dropbox.model.v2.IntermediateFile;
+import jasmine.jragon.pdf.page.PDFHighlighter;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
 import org.apache.pdfbox.Loader;
@@ -12,15 +13,16 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
 import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
-import org.apache.pdfbox.pdmodel.font.PDType1Font;
-import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
 import org.apache.pdfbox.pdmodel.graphics.state.RenderingMode;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode;
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import speiger.src.collections.ints.maps.impl.concurrent.Int2ObjectConcurrentOpenHashMap;
+import speiger.src.collections.ints.maps.interfaces.Int2ObjectMap;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
@@ -31,12 +33,14 @@ import java.time.LocalDateTime;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Random;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.OptionalInt;
+import java.util.TreeMap;
 
+import static jasmine.jragon.pdf.page.PDFHighlighter.JSON_ID_KEY;
+import static jasmine.jragon.pdf.page.PDFHighlighter.JSON_RESOURCE_KEY;
 import static org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND;
 
 /*
@@ -50,24 +54,27 @@ public final class PDFEditor {
     // Define text position
     private static final float X_OFFSET = 10, Y_OFFSET = 35;
     private static final float LINE_OFFSET = 69.41f;
+    private static final int FONT_SIZE = 96;
+    private static final String LINE_OF_INVISIBLE_CHARS = "i".repeat(53);
+    private static final int NUMBER_OF_LINES_PER_PAGE = 26;
+
     private static final float TEXT_ALPHA_VALUE = 0.0f;
 
-    private static final int FONT_SIZE = 96;
-    private static final int NUMBER_OF_LINES_PER_PAGE = 26;
-    private static final int MAX_THREAD_ID = 100;
-
-    private static final Random GENERATOR = new Random();
-
-    private static final Set<Integer> THREAD_IDS = Collections.synchronizedSet(new TreeSet<>());
-
-    private static final String LINE_OF_INVISIBLE_CHARS = "i".repeat(53);
     private static final String TEMPORARY_FILE_NAME = "temp-note-file-";
+    private static final String EMPTY_JSON_FIELD = "empty-field";
+
+    private static final Map<String, String> THREAD_FILENAME_CACHE = Collections.synchronizedMap(new TreeMap<>());
+
     private static final String WATERMARK_PDF = "Dorogan_Black-85.pdf";
+    private static final String PASSWORD_FILE = "pass.bin";
     private static final String OWNER_PASSWORD;
 
     private static final PDExtendedGraphicsState TEXT_GRAPHICS_STATE;
 
     private static final Logger LOG = LoggerFactory.getLogger(PDFEditor.class);
+
+    private static final Int2ObjectMap<PDFHighlighter> HIGHLIGHTER_CACHE =
+            new Int2ObjectConcurrentOpenHashMap<>(PDFHighlighter.INITIAL_CACHE_CAPACITY);
 
     public static void customizeDocFile(IntermediateFile intermediateFile) {
         int pageCount = 1;
@@ -117,29 +124,93 @@ public final class PDFEditor {
 
         return TEMPORARY_FILE_NAME + "0.pdf";
     }
-    
-    private static int generateThreadId() {
-        int threadId;
-        do {
-            threadId = GENERATOR.nextInt(MAX_THREAD_ID);
-        } while (THREAD_IDS.contains(threadId));
-        
-        THREAD_IDS.add(threadId);
-        return threadId;
+
+    private static void addTextToPage(PDDocument document, PDPage page, int pageCount, String dbxPath) {
+//        try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
+//            for (int i = 0; i < NUMBER_OF_LINES_PER_PAGE; i++) {
+//                contentStream.beginText();
+//                contentStream.setGraphicsStateParameters(TEXT_GRAPHICS_STATE);
+//                contentStream.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), FONT_SIZE);
+//                contentStream.newLineAtOffset(X_OFFSET, Y_OFFSET + (LINE_OFFSET * i));
+//                contentStream.showText(LINE_OF_INVISIBLE_CHARS);
+//                contentStream.endText();
+//            }
+//        } catch (IOException e) {
+//            LOG.error("IO Exception occurred on a page", e);
+//        }
+        var onyxJsonOpt = PDFHighlighter.getToImageOnyxTag(page.getResources());
+
+        if (onyxJsonOpt.isEmpty()) {
+            LOG.warn("Page {} on {} has no onyx tag", pageCount, dbxPath);
+            return;
+        }
+
+        var highlighterOpt = getHighlighter(onyxJsonOpt.get());
+
+        highlighterOpt.ifPresent(highlighter -> {
+            try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
+                highlighter.generateHighlights(contentStream, TEXT_GRAPHICS_STATE);
+            } catch (IOException e) {
+                LOG.error("IO Exception occurred on a page", e);
+            }
+        });
     }
 
-    private static void addTextToPage(PDDocument document, PDPage page) {
-        try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
-            for (int i = 0; i < NUMBER_OF_LINES_PER_PAGE; i++) {
-                contentStream.beginText();
-                contentStream.setGraphicsStateParameters(TEXT_GRAPHICS_STATE);
-                contentStream.setFont(new PDType1Font(Standard14Fonts.FontName.TIMES_ROMAN), FONT_SIZE);
-                contentStream.newLineAtOffset(X_OFFSET, Y_OFFSET + (LINE_OFFSET * i));
-                contentStream.showText(LINE_OF_INVISIBLE_CHARS);
-                contentStream.endText();
+    private static Optional<PDFHighlighter> getHighlighter(JSONObject jsonObject) {
+        var imageIdOpt = extractImageIdValue(jsonObject);
+
+        if (imageIdOpt.isEmpty()) {
+            return Optional.empty();
+        }
+        int imageId = imageIdOpt.getAsInt();
+
+        if (HIGHLIGHTER_CACHE.containsKey(imageId)) {
+            return Optional.of(HIGHLIGHTER_CACHE.get(imageId));
+        }
+        var opt = PDFHighlighter.fromImageId(imageId);
+
+        opt.ifPresent(pdfHighlighter -> HIGHLIGHTER_CACHE.put(imageId, pdfHighlighter));
+
+        if (opt.isEmpty()) {
+            LOG.info("ID {} has no highlighter", imageId);
+        }
+
+        return opt;
+    }
+
+    private static OptionalInt extractImageIdValue(JSONObject jsonObject) {
+        var id = jsonObject.optString(JSON_ID_KEY, EMPTY_JSON_FIELD);
+        var resId = jsonObject.optString(JSON_RESOURCE_KEY, EMPTY_JSON_FIELD);
+        var attributes = jsonObject.optString(PDFHighlighter.JSON_ATTRIBUTES_KEY);
+
+        if (EMPTY_JSON_FIELD.equals(id) && EMPTY_JSON_FIELD.equals(resId)) {
+            LOG.trace("Current JSON: {} - Expecting keys '{}' and '{}'", jsonObject, JSON_ID_KEY, JSON_RESOURCE_KEY);
+            return OptionalInt.empty();
+        }
+
+        int idVal = Optional.of(id.trim())
+                .filter(s -> s.matches("\\d+"))
+                .map(Integer::parseInt)
+                .orElse(Integer.MIN_VALUE);
+        int resIdVal = Optional.of(resId.trim())
+                .filter(s -> s.matches("\\d+"))
+                .map(Integer::parseInt)
+                .orElse(Integer.MIN_VALUE);
+
+        if (idVal == Integer.MIN_VALUE && resIdVal == Integer.MIN_VALUE) {
+            LOG.debug("Funky non-integer/negative JSON IDs: {}", jsonObject);
+            return OptionalInt.of(Integer.MIN_VALUE);
+        } else if (idVal == resIdVal) {
+            int firstIndex = attributes.indexOf(id);
+
+            if (firstIndex == -1 || firstIndex >= attributes.lastIndexOf(id)) {
+                LOG.warn("IDs agree, 2 Attributes don't: (ID: {}, ResID: {}) | {}", idVal, resIdVal, attributes);
             }
-        } catch (IOException e) {
-            LOG.error("IO Exception occurred on a page", e);
+
+            return OptionalInt.of(idVal);
+        } else {
+            LOG.debug("ID mismatch: (ID: {}, ResID: {}) - Taking the max", idVal, resIdVal);
+            return OptionalInt.of(Math.max(idVal, resIdVal));
         }
     }
 
@@ -218,7 +289,7 @@ public final class PDFEditor {
 
     static {
         try (var inputStream = new DataInputStream(new BufferedInputStream(
-                Objects.requireNonNull(PDFEditor.class.getResourceAsStream("pass.bin"))))) {
+                Objects.requireNonNull(PDFEditor.class.getResourceAsStream(PASSWORD_FILE))))) {
             var stringBuilder = new StringBuilder();
 
             while (true) {
@@ -231,13 +302,13 @@ public final class PDFEditor {
                     stringBuilder.append((char) letter);
                 } catch (EOFException e) {
                     OWNER_PASSWORD = stringBuilder.toString();
-                    LOG.debug("Password loaded: {}*** - {} characters long",
+                    LOG.trace("Password loaded: {}*** - {} characters long",
                             OWNER_PASSWORD.substring(0, 3), OWNER_PASSWORD.length());
                     break;
                 }
             }
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            throw new IllegalStateException(e);
         }
     }
 

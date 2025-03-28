@@ -3,7 +3,7 @@ plugins {
     id 'application'
 }
 
-mainClassName = 'jasmine.jragon.MegaUpload'
+mainClassName = 'jasmine.jragon.TransportDriver'
 
 sourceCompatibility = '17'
 targetCompatibility = '17'
