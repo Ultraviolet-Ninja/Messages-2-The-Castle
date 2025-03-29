@@ -12,6 +12,9 @@ to MEGA. Along the transfer process, we're also adding more PDF features like wa
 the lines of the PDF highlightable (**by adding a bunch of invisible characters to the PDF XD**)._
 
 ## Table of Contents
+- [Operations](#operations)
+- [Future Operations](#future-operations)
+- [Program Development History](#program-development-history)
 - [Past Problems in Mk. 1](#past-problems-in-mk-1)
     - [Evernote](#evernote)
     - [Dropbox](#dropbox)
@@ -30,9 +33,53 @@ the lines of the PDF highlightable (**by adding a bunch of invisible characters 
         - [Objective](#objective)
         - [What does this solve?](#what-does-this-solve)
         - [Minor Problem](#minor-problem)
-- [Operations](#operations)
-- [Future Operations](#future-operations)
 
+
+### Operations
+1. If the `Crash-Cloud-Path` argument is set `True`, then we wipe the cloud path where we store notes in MEGA before
+   the transfer
+    - Also deletes the `revision-list.txt` if it exists so that we can conduct a full transfer from Dropbox to MEGA
+2. Fetch the full list of files from Dropbox
+    - The Dropbox CLI sometimes would cut the `ls` command prematurely, so we weren't able to get the list of files
+        - The fix for this is to try again with a linear drop-off rate similar to how browsers employ
+          [Exponential Backoff](https://en.wikipedia.org/wiki/Exponential_backoff) for inaccessible websites to
+          prevent heavy traffic
+3. Sort files strictly by filename (_Excluding the absolute path_)
+4. Detect any **file movements** within the Dropbox system
+    - A file movement is defined as the same file that appears twice in Dropbox with a difference of one directory
+        - This could indicate that the file was moved to a new directory and the older file should be deleted
+        - It can also indicate that a folder was renamed somewhere along the absolute path leading to the file
+5. If any file movements are found...
+    - Determine the older file among the pair (_Older files are determined by older ages and smaller file sizes_)
+        - Delete the older file from Dropbox
+        - Remove the older file from the fetched file list
+        - If an older file cannot be determined, disregard the pair
+6. If the `revision-list.txt` file exists, filter out all Dropbox files that haven't changed since last transfer
+    - If it filters out all files, the program stops here. (_No new files were added to Dropbox_)
+7. Rewrite the `revision-list.txt` file with all new files and hash codes
+8. Prepare files for transfer
+    - If the amount of files reaches a certain threshold, conduct the transfers in parallel
+    - Download the PDFs from Dropbox (_one at a time because some notes will have the same name, and we try
+      to prevent local overwriting as much as possible_)
+    - Process the files
+        - Make the lines of each page highlightable
+        - Add a simple table of contents that labels each page with the `Page No.`
+        - Encrypting PDFs and locking permissions for certain operations (*more for fun than security. PDF security is
+          garbage, [see here](documentation/Problems%20with%20PDF%20Password%20Protection.md)*)
+        - Adding a watermark to each page of the '_Jragon_' logo
+9. Log and remove any erroneous files from the `revision-list.txt` file so that the program can try again at a
+   later time
+
+
+### Future Operations
+- [ ] Make a simulation mode for other people to run
+- [ ] Creating a file that extracts all the important info from the notes so that we can plug them into the Handwriting Note Indexer Project
+- [x] Making the highlightable lines more accommodating to notes with differing line counts
+- [x] Add a progress bar for the CLI when running this program manually
+    - [x] Let's make it more exciting with sub-progress bars for the sequential and parallel manual runs
+- [x] Wiping empty Dropbox directories after movements are conducted
+
+# Program Development History
 
 ## Past Problems in Mk. 1
 ### Evernote
@@ -52,7 +99,6 @@ the lines of the PDF highlightable (**by adding a bunch of invisible characters 
 ### OneNote
 - Is there even a Java API??
     - Not that I could find as of writing this
-
 
 
 ## Documentation to Reference
@@ -118,47 +164,3 @@ Design a Java wrapper around the CLI similar to [Eliux MEGA cmd4J library](https
 - **Solution:** In Linux, we can prepend a command with `sudo -u [USERNAME]` so that the command can be <u>executed by
   a particular user with their set of permissions</u>. In other words, I can substitute myself in as the user running
   the `jar` file
-
-### Operations
-1. If the `Crash-Cloud-Path` argument is set `True`, then we wipe the cloud path where we store notes in MEGA before
-   the transfer
-    - Also deletes the `revision-list.txt` if it exists so that we can conduct a full transfer from Dropbox to MEGA
-2. Fetch the full list of files from Dropbox
-    - The Dropbox CLI sometimes would cut the `ls` command prematurely, so we weren't able to get the list of files
-        - The fix for this is to try again with a linear drop-off rate similar to how browsers employ
-          [Exponential Backoff](https://en.wikipedia.org/wiki/Exponential_backoff) for inaccessible websites to
-          prevent heavy traffic
-3. Sort files strictly by filename (_Excluding the absolute path_)
-4. Detect any **file movements** within the Dropbox system
-    - A file movement is defined as the same file that appears twice in Dropbox with a difference of one directory
-        - This could indicate that the file was moved to a new directory and the older file should be deleted
-        - It can also indicate that a folder was renamed somewhere along the absolute path leading to the file
-5. If any file movements are found...
-    - Determine the older file among the pair (_Older files are determined by older ages and smaller file sizes_)
-        - Delete the older file from Dropbox
-        - Remove the older file from the fetched file list
-        - If an older file cannot be determined, disregard the pair
-6. If the `revision-list.txt` file exists, filter out all Dropbox files that haven't changed since last transfer
-    - If it filters out all files, the program stops here. (_No new files were added to Dropbox_)
-7. Rewrite the `revision-list.txt` file with all new files and hash codes
-8. Prepare files for transfer
-    - If the amount of files reaches a certain threshold, conduct the transfers in parallel
-    - Download the PDFs from Dropbox (_one at a time because some notes will have the same name, and we try
-      to prevent local overwriting as much as possible_)
-    - Process the files
-        - Make the lines of each page highlightable
-        - Add a simple table of contents that labels each page with the `Page No.`
-        - Encrypting PDFs and locking permissions for certain operations (*more for fun than security. PDF security is
-          garbage, [see here](documentation/Problems%20with%20PDF%20Password%20Protection.md)*)
-        - Adding a watermark to each page of the '_Jragon_' logo
-9. Log and remove any erroneous files from the `revision-list.txt` file so that the program can try again at a
-   later time
-
-
-### Future Operations
-- [ ] Make a simulation mode for other people to run
-- [ ] Creating a file that extracts all the important info from the notes so that we can plug them into the Handwriting Note Indexer Project
-- [x] Making the highlightable lines more accommodating to notes with differing line counts
-- [x] Add a progress bar for the CLI when running this program manually
-    - [x] Let's make it more exciting with sub-progress bars for the sequential and parallel manual runs
-- [x] Wiping empty Dropbox directories after movements are conducted
