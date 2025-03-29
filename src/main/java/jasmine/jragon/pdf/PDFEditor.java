@@ -151,7 +151,7 @@ public final class PDFEditor {
         if (HIGHLIGHTER_CACHE.containsKey(imageContentHash)) {
             return Optional.of(HIGHLIGHTER_CACHE.get(imageContentHash));
         }
-        var opt = PDFHighlighter.fromImageHash(imageContentHash);
+        var opt = PDFHighlighter.HashConverter.fromImageHash(imageContentHash);
 
         opt.ifPresentOrElse(
                 pdfHighlighter -> HIGHLIGHTER_CACHE.put(imageContentHash, pdfHighlighter),

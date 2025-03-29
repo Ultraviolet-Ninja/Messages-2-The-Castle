@@ -6,6 +6,8 @@ import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
@@ -14,10 +16,54 @@ import java.io.InputStreamReader;
 import java.util.Arrays;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public sealed interface PDFHighlighter permits HighlightableLinedPage {
-    int INITIAL_CACHE_CAPACITY = 4;
+    enum HashConverter implements Supplier<PDFHighlighter> {
+        LINED_PAGE_24(0xF7BE_8BB0) {
+            @Override
+            public PDFHighlighter get() {
+                return new TwentyFourLinedPage();
+            }
+        },
+        LINED_PAGE_26(0xE695_A683) {
+            @Override
+            public PDFHighlighter get() {
+                return new TwentySixLinedPage();
+            }
+        },
+        LINED_PAGE_28(0xC7C8_2C37) {
+            @Override
+            public PDFHighlighter get() {
+                return new TwentyEightLinedPage();
+            }
+        },
+        LINED_PAGE_30(0xFB1F_A7E0) {
+            @Override
+            public PDFHighlighter get() {
+                return new ThirtyLinedPage();
+            }
+        };
+
+        private final int hashcode;
+
+        HashConverter(int hashcode) {
+            this.hashcode = hashcode;
+        }
+
+        public static Optional<PDFHighlighter> fromImageHash(int imageHash) {
+            for (var hashConverter : values()) {
+                if (hashConverter.hashcode == imageHash) {
+                    return Optional.of(hashConverter.get());
+                }
+            }
+
+            return Optional.empty();
+        }
+    }
+
+    int INITIAL_CACHE_CAPACITY = HashConverter.values().length;
     COSName FX_NAME = COSName.getPDFName("FXX1");
 
     /**
@@ -65,17 +111,8 @@ public sealed interface PDFHighlighter permits HighlightableLinedPage {
         return OptionalInt.empty();
     }
 
-    static Optional<PDFHighlighter> fromImageHash(int imageHash) {
-        return switch (imageHash) {
-            case TwentySixLinedPage.IMAGE_CONTENT_HASH -> Optional.of(new TwentySixLinedPage());
-            case TwentyFourLinedPage.IMAGE_CONTENT_HASH -> Optional.of(new TwentyFourLinedPage());
-            case TwentyEightLinedPage.IMAGE_CONTENT_HASH -> Optional.of(new TwentyEightLinedPage());
-            case ThirtyLinedPage.IMAGE_CONTENT_HASH -> Optional.of(new ThirtyLinedPage());
-            default -> Optional.empty();
-        };
-    }
-
-    static String generateCharLine(int characterCount) {
+    @Contract("_ -> new")
+    static @NotNull String generateCharLine(int characterCount) {
         var charArray = new char[characterCount];
         Arrays.fill(charArray, INVISIBLE_CHARACTER);
         return new String(charArray);
