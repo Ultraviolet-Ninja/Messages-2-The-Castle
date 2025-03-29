@@ -18,7 +18,6 @@ import org.apache.pdfbox.pdmodel.graphics.state.RenderingMode;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode;
-import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import speiger.src.collections.ints.maps.impl.concurrent.Int2ObjectConcurrentOpenHashMap;
@@ -36,11 +35,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.TreeMap;
 
-import static jasmine.jragon.pdf.page.PDFHighlighter.JSON_ID_KEY;
-import static jasmine.jragon.pdf.page.PDFHighlighter.JSON_RESOURCE_KEY;
 import static org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND;
 
 /*
@@ -61,7 +57,6 @@ public final class PDFEditor {
     private static final float TEXT_ALPHA_VALUE = 0.0f;
 
     private static final String TEMPORARY_FILE_NAME = "temp-note-file-";
-    private static final String EMPTY_JSON_FIELD = "empty-field";
 
     private static final Map<String, String> THREAD_FILENAME_CACHE = Collections.synchronizedMap(new TreeMap<>());
 
@@ -84,10 +79,9 @@ public final class PDFEditor {
         boolean watermarkAdded = false;
         try (var document = intermediateFile.createPDF()) {
             document.getDocumentCatalog().setDocumentOutline(docOutline);
-            var dbxPath = intermediateFile.getDropboxFilePath();
 
             for (var page : document.getPages()) {
-                addTextToPage(document, page, pageCount, dbxPath);
+                addTextToPage(document, page);
                 addOutlineToPage(page, pageCount++, docOutline);
             }
 
@@ -125,7 +119,7 @@ public final class PDFEditor {
         return TEMPORARY_FILE_NAME + "0.pdf";
     }
 
-    private static void addTextToPage(PDDocument document, PDPage page, int pageCount, String dbxPath) {
+    private static void addTextToPage(PDDocument document, PDPage page) {
 //        try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
 //            for (int i = 0; i < NUMBER_OF_LINES_PER_PAGE; i++) {
 //                contentStream.beginText();
@@ -138,14 +132,11 @@ public final class PDFEditor {
 //        } catch (IOException e) {
 //            LOG.error("IO Exception occurred on a page", e);
 //        }
-        var onyxJsonOpt = PDFHighlighter.getToImageOnyxTag(page.getResources());
+        var hashOptional = PDFHighlighter.getBackgroundImageHash(page.getResources());
 
-        if (onyxJsonOpt.isEmpty()) {
-            LOG.warn("Page {} on {} has no onyx tag", pageCount, dbxPath);
-            return;
-        }
-
-        var highlighterOpt = getHighlighter(onyxJsonOpt.get());
+        Optional<PDFHighlighter> highlighterOpt = hashOptional.isPresent() ?
+                getHighlighter(hashOptional.getAsInt()) :
+                Optional.empty();
 
         highlighterOpt.ifPresent(highlighter -> {
             try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
@@ -156,62 +147,18 @@ public final class PDFEditor {
         });
     }
 
-    private static Optional<PDFHighlighter> getHighlighter(JSONObject jsonObject) {
-        var imageIdOpt = extractImageIdValue(jsonObject);
-
-        if (imageIdOpt.isEmpty()) {
-            return Optional.empty();
+    private static Optional<PDFHighlighter> getHighlighter(int imageContentHash) {
+        if (HIGHLIGHTER_CACHE.containsKey(imageContentHash)) {
+            return Optional.of(HIGHLIGHTER_CACHE.get(imageContentHash));
         }
-        int imageId = imageIdOpt.getAsInt();
+        var opt = PDFHighlighter.fromImageHash(imageContentHash);
 
-        if (HIGHLIGHTER_CACHE.containsKey(imageId)) {
-            return Optional.of(HIGHLIGHTER_CACHE.get(imageId));
-        }
-        var opt = PDFHighlighter.fromImageId(imageId);
-
-        opt.ifPresent(pdfHighlighter -> HIGHLIGHTER_CACHE.put(imageId, pdfHighlighter));
-
-        if (opt.isEmpty()) {
-            LOG.info("ID {} has no highlighter", imageId);
-        }
+        opt.ifPresentOrElse(
+                pdfHighlighter -> HIGHLIGHTER_CACHE.put(imageContentHash, pdfHighlighter),
+                () -> LOG.info("Hash value {} has no highlighter", imageContentHash)
+        );
 
         return opt;
-    }
-
-    private static OptionalInt extractImageIdValue(JSONObject jsonObject) {
-        var id = jsonObject.optString(JSON_ID_KEY, EMPTY_JSON_FIELD);
-        var resId = jsonObject.optString(JSON_RESOURCE_KEY, EMPTY_JSON_FIELD);
-        var attributes = jsonObject.optString(PDFHighlighter.JSON_ATTRIBUTES_KEY);
-
-        if (EMPTY_JSON_FIELD.equals(id) && EMPTY_JSON_FIELD.equals(resId)) {
-            LOG.trace("Current JSON: {} - Expecting keys '{}' and '{}'", jsonObject, JSON_ID_KEY, JSON_RESOURCE_KEY);
-            return OptionalInt.empty();
-        }
-
-        int idVal = Optional.of(id.trim())
-                .filter(s -> s.matches("\\d+"))
-                .map(Integer::parseInt)
-                .orElse(Integer.MIN_VALUE);
-        int resIdVal = Optional.of(resId.trim())
-                .filter(s -> s.matches("\\d+"))
-                .map(Integer::parseInt)
-                .orElse(Integer.MIN_VALUE);
-
-        if (idVal == Integer.MIN_VALUE && resIdVal == Integer.MIN_VALUE) {
-            LOG.debug("Funky non-integer/negative JSON IDs: {}", jsonObject);
-            return OptionalInt.of(Integer.MIN_VALUE);
-        } else if (idVal == resIdVal) {
-            int firstIndex = attributes.indexOf(id);
-
-            if (firstIndex == -1 || firstIndex >= attributes.lastIndexOf(id)) {
-                LOG.warn("IDs agree, 2 Attributes don't: (ID: {}, ResID: {}) | {}", idVal, resIdVal, attributes);
-            }
-
-            return OptionalInt.of(idVal);
-        } else {
-            LOG.debug("ID mismatch: (ID: {}, ResID: {}) - Taking the max", idVal, resIdVal);
-            return OptionalInt.of(Math.max(idVal, resIdVal));
-        }
     }
 
     private static void addOutlineToPage(PDPage page, int pageNumber, PDOutlineNode outlineNode) {
