@@ -79,9 +79,10 @@ public final class PDFEditor {
         boolean watermarkAdded = false;
         try (var document = intermediateFile.createPDF()) {
             document.getDocumentCatalog().setDocumentOutline(docOutline);
+            var dbxPath = intermediateFile.getDropboxFilePath();
 
             for (var page : document.getPages()) {
-                addTextToPage(document, page);
+                addTextToPage(document, page, pageCount, dbxPath);
                 addOutlineToPage(page, pageCount++, docOutline);
             }
 
@@ -119,7 +120,7 @@ public final class PDFEditor {
         return TEMPORARY_FILE_NAME + "0.pdf";
     }
 
-    private static void addTextToPage(PDDocument document, PDPage page) {
+    private static void addTextToPage(PDDocument document, PDPage page, int pageNumber, String dbxPath) {
 //        try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
 //            for (int i = 0; i < NUMBER_OF_LINES_PER_PAGE; i++) {
 //                contentStream.beginText();
@@ -142,7 +143,8 @@ public final class PDFEditor {
             try (var contentStream = new PDPageContentStream(document, page, APPEND, false)) {
                 highlighter.generateHighlights(contentStream, TEXT_GRAPHICS_STATE);
             } catch (IOException e) {
-                LOG.error("IO Exception occurred on a page", e);
+                var pageInfo = String.format("%d of %s", pageNumber, dbxPath);
+                LOG.error("IO Exception occurred on page {}: ", pageInfo, e);
             }
         });
     }
@@ -155,7 +157,8 @@ public final class PDFEditor {
 
         opt.ifPresentOrElse(
                 pdfHighlighter -> HIGHLIGHTER_CACHE.put(imageContentHash, pdfHighlighter),
-                () -> LOG.info("Hash value {} has no highlighter", imageContentHash)
+                () -> LOG.warn("Hash value {} (0x{}) has no highlighter",
+                        imageContentHash, Integer.toHexString(imageContentHash).toUpperCase())
         );
 
         return opt;
