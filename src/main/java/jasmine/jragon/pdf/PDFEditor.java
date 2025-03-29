@@ -261,20 +261,4 @@ public final class PDFEditor {
             throw new IllegalStateException(e);
         }
     }
-
-//    static {
-//        if (System.getProperty("os.name").toLowerCase().contains("linux")) {
-//            LINE_OF_INVISIBLE_CHARS = "i".repeat(48);
-//            FONT_SIZE = 102;
-//            X_OFFSET = 30;
-//            LINE_OFFSET = 75.25f;
-//            NUMBER_OF_LINES_PER_PAGE = 24; //Don't know why this is happening on Linux, but whatever
-//        } else {
-//            LINE_OF_INVISIBLE_CHARS = "i".repeat(50);
-//            FONT_SIZE = 96;
-//            X_OFFSET = 50;
-//            LINE_OFFSET = 69.41f;
-//            NUMBER_OF_LINES_PER_PAGE = 26;
-//        }
-//    }
 }
